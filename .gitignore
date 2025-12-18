@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+*.swp
+
+# 忽略基准结果数据
+/trt_bench_results/
+
+
