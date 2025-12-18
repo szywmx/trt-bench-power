@@ -69,6 +69,15 @@ python3 trt_bench_power.py \
     --engine_dir TensorRT-LLM/examples/llama/engine_1gpu_gptq \
     --tokenizer_dir /mnt/sd0/llama/dir \
     -p 0 \
+    -n 1024 \
+    -r 10
+```
+
+```bash
+python3 trt_bench_power.py \
+    --engine_dir /mnt/sd0/TensorRT-LLM/examples/llama/engine_1gpu_gptq \
+    --tokenizer_dir /mnt/sd0/llama/dir \
+    -p 0 \
     -n 64 \
     -r 10
 ```
