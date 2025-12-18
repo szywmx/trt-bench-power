@@ -26,7 +26,7 @@ python3 -c "import tensorrt_llm; print('OK')"
 ```bash
 # 转换检查点
 python3 convert_checkpoint.py \
-    --model_dir /path/to/model \
+    --model_dir /mnt/sd0/llama/dir \
     --output_dir tllm_checkpoint \
     --dtype float16
 

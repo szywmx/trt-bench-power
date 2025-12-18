@@ -8,6 +8,7 @@ import os
 import json
 import time
 import threading
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
@@ -44,6 +45,61 @@ def create_dir_if_not_exists(file_path: str):
     """Create directory if it doesn't exist"""
     dir_path = Path(file_path).parent
     dir_path.mkdir(parents=True, exist_ok=True)
+
+
+def _format_json_compact_arrays_recursive(obj, indent_level=0, compact_keys=None):
+    """Recursively format JSON with compact arrays for specific keys"""
+    if compact_keys is None:
+        compact_keys = ['timestamps', 'value']
+    
+    indent_str = ' ' * (indent_level * 2)
+    next_indent = ' ' * ((indent_level + 1) * 2)
+    
+    if isinstance(obj, dict):
+        if not obj:
+            return '{}'
+        
+        items = []
+        for key, value in obj.items():
+            if key in compact_keys and isinstance(value, list):
+                # Compact format: serialize array without indentation
+                compact_array = json.dumps(value, separators=(',', ' '))
+                items.append(f'{next_indent}"{key}": {compact_array}')
+            elif isinstance(value, dict):
+                formatted_value = _format_json_compact_arrays_recursive(value, indent_level + 1, compact_keys)
+                items.append(f'{next_indent}"{key}": {formatted_value}')
+            elif isinstance(value, list):
+                formatted_value = _format_json_compact_arrays_recursive(value, indent_level + 1, compact_keys)
+                items.append(f'{next_indent}"{key}": {formatted_value}')
+            else:
+                items.append(f'{next_indent}"{key}": {json.dumps(value)}')
+        
+        return '{\n' + ',\n'.join(items) + '\n' + indent_str + '}'
+    
+    elif isinstance(obj, list):
+        if not obj:
+            return '[]'
+        
+        items = []
+        for item in obj:
+            if isinstance(item, dict):
+                formatted_item = _format_json_compact_arrays_recursive(item, indent_level + 1, compact_keys)
+                items.append(next_indent + formatted_item)
+            elif isinstance(item, list):
+                formatted_item = _format_json_compact_arrays_recursive(item, indent_level + 1, compact_keys)
+                items.append(next_indent + formatted_item)
+            else:
+                items.append(next_indent + json.dumps(item))
+        
+        return '[\n' + ',\n'.join(items) + '\n' + indent_str + ']'
+    
+    else:
+        return json.dumps(obj)
+
+
+def format_json_compact_arrays(obj, indent=2):
+    """Format JSON with compact arrays (timestamps and value arrays on single lines)"""
+    return _format_json_compact_arrays_recursive(obj, indent_level=0, compact_keys=['timestamps', 'value'])
 
 
 @dataclass
@@ -100,7 +156,7 @@ class MonitoringData:
         self.timestamps[module_name].append(int(time.time_ns()))
     
     def data_to_json_str(self) -> str:
-        """Convert to JSON string"""
+        """Convert to JSON string (returns standard JSON, not formatted)"""
         result = {
             "sampling_duration_ms": self.sampling_duration_ms,
             self.data_type: {},
@@ -115,7 +171,8 @@ class MonitoringData:
                 "value": values
             }
         
-        return json.dumps(result, indent=2)
+        # Return standard JSON (will be formatted later)
+        return json.dumps(result)
 
 
 class BaseMonitor:
@@ -172,11 +229,12 @@ class BaseMonitor:
         return self.md_array
     
     def data_to_json_str(self) -> str:
-        """Convert all monitoring data to JSON string"""
+        """Convert all monitoring data to JSON string (returns standard JSON, not formatted)"""
         json_list = []
         for md in self.md_array:
             json_list.append(json.loads(md.data_to_json_str()))
-        return json.dumps(json_list, indent=2)
+        # Return standard JSON (will be formatted later in dump_data_to_json)
+        return json.dumps(json_list)
     
     def dump_data_to_json(self, file_path: str):
         """Dump data to JSON file"""
@@ -289,6 +347,7 @@ def dump_data_to_json(file_path: str, data_map: Dict[str, str]):
     for key, json_str in data_map.items():
         result[key] = json.loads(json_str)
     
+    formatted_json = format_json_compact_arrays(result, indent=2)
     with open(file_path, "w") as f:
-        json.dump(result, f, indent=2)
+        f.write(formatted_json)
 

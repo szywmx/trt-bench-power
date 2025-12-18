@@ -98,36 +98,75 @@ def test_generation(
     time_holder: TimeInfoHolder,
     rep_id: int
 ):
-    """Test token generation (decoding phase only)"""
+    """Test token generation (decoding phase only)
+    Generates tokens one by one and records time for each token
+    """
     # Generate a random prompt token to start with
     start_token = generate_random_tokens(tokenizer, 1, pad_id)[0].item()
     input_ids = torch.tensor([[start_token]], dtype=torch.int32)
     
-    start_time = get_current_time_ns()
-    
-    # Generate tokens
-    with torch.no_grad():
-        outputs = runner.generate(
-            batch_input_ids=input_ids,
-            max_new_tokens=n_gen,
-            end_id=end_id,
-            pad_id=pad_id,
-            temperature=1.0,
-            top_k=1,
-            top_p=1.0,
-            return_dict=True,
-        )
-    torch.cuda.synchronize()
-    end_time = get_current_time_ns()
-    
-    # Record time for the entire generation
-    time_holder.add_info(TimeInfoItem(
-        n_p_eval=n_past,
-        n_eval=n_gen,
-        rep_id=rep_id,
-        start_time_ns=start_time,
-        end_time_ns=end_time
-    ))
+    # Generate tokens one by one, recording time for each
+    for i in range(n_gen):
+        start_time = get_current_time_ns()
+        
+        # Generate one token at a time
+        with torch.no_grad():
+            outputs = runner.generate(
+                batch_input_ids=input_ids,
+                max_new_tokens=1,  # Generate only 1 token per call
+                end_id=end_id,
+                pad_id=pad_id,
+                temperature=1.0,
+                top_k=1,
+                top_p=1.0,
+                return_dict=True,
+            )
+        torch.cuda.synchronize()
+        end_time = get_current_time_ns()
+        
+        # Record time for this token
+        time_holder.add_info(TimeInfoItem(
+            n_p_eval=n_past,
+            n_eval=i + 1,  # Token index (1-based)
+            rep_id=rep_id,
+            start_time_ns=start_time,
+            end_time_ns=end_time
+        ))
+        
+        # Get the generated token for next iteration
+        if isinstance(outputs, dict):
+            output_ids = outputs.get('output_ids', outputs.get('sequences'))
+        else:
+            output_ids = outputs
+        
+        if output_ids is not None:
+            # Extract the last token as input for next iteration
+            if isinstance(output_ids, torch.Tensor):
+                # Handle different tensor shapes: [batch, beam, seq] or [batch, seq]
+                if output_ids.dim() == 3:
+                    # Shape: [batchSize, beamWidth, maxSeqLength]
+                    last_token = output_ids[0, 0, -1].item()  # [batch=0, beam=0, last_token]
+                elif output_ids.dim() == 2:
+                    # Shape: [batchSize, maxSeqLength]
+                    last_token = output_ids[0, -1].item()
+                else:
+                    # Fallback: try to get the last element
+                    last_token = output_ids.flatten()[-1].item()
+            elif isinstance(output_ids, list):
+                # Handle nested list structure
+                if len(output_ids) > 0:
+                    if isinstance(output_ids[0], list):
+                        last_token = output_ids[0][-1] if output_ids[0] else start_token
+                    else:
+                        last_token = output_ids[-1]
+                else:
+                    last_token = start_token
+            else:
+                last_token = start_token
+            input_ids = torch.tensor([[last_token]], dtype=torch.int32)
+        else:
+            # Fallback: use random token if output is None
+            input_ids = torch.tensor([[generate_random_tokens(tokenizer, 1, pad_id)[0].item()]], dtype=torch.int32)
 
 
 def test_prompt_and_generation(
@@ -140,18 +179,19 @@ def test_prompt_and_generation(
     time_holder: TimeInfoHolder,
     rep_id: int
 ):
-    """Test both prompt processing and generation"""
+    """Test both prompt processing and generation
+    First processes the prompt (generates 1 token), then generates remaining tokens one by one
+    """
     # Generate random prompt tokens
     prompt_tokens = generate_random_tokens(tokenizer, n_prompt, pad_id)
     input_ids = prompt_tokens.unsqueeze(0)  # Add batch dimension [1, n_prompt]
     
+    # Process prompt: generate 1 token to measure prompt processing time
     start_time = get_current_time_ns()
-    
-    # Generate tokens
     with torch.no_grad():
         outputs = runner.generate(
             batch_input_ids=input_ids,
-            max_new_tokens=n_gen,
+            max_new_tokens=1,  # Generate 1 token to complete prompt processing
             end_id=end_id,
             pad_id=pad_id,
             temperature=1.0,
@@ -162,14 +202,107 @@ def test_prompt_and_generation(
     torch.cuda.synchronize()
     end_time = get_current_time_ns()
     
-    # Record time for the entire operation
+    # Record time for prompt processing (first token generation)
     time_holder.add_info(TimeInfoItem(
         n_p_eval=n_prompt,
-        n_eval=n_gen,
+        n_eval=1,
         rep_id=rep_id,
         start_time_ns=start_time,
         end_time_ns=end_time
     ))
+    
+    # Get the generated token for next iteration
+    if isinstance(outputs, dict):
+        output_ids = outputs.get('output_ids', outputs.get('sequences'))
+    else:
+        output_ids = outputs
+    
+    if output_ids is not None:
+        if isinstance(output_ids, torch.Tensor):
+            # Handle different tensor shapes: [batch, beam, seq] or [batch, seq]
+            if output_ids.dim() == 3:
+                # Shape: [batchSize, beamWidth, maxSeqLength]
+                last_token = output_ids[0, 0, -1].item()  # [batch=0, beam=0, last_token]
+            elif output_ids.dim() == 2:
+                # Shape: [batchSize, maxSeqLength]
+                last_token = output_ids[0, -1].item()
+            else:
+                # Fallback: try to get the last element
+                last_token = output_ids.flatten()[-1].item()
+        elif isinstance(output_ids, list):
+            # Handle nested list structure
+            if len(output_ids) > 0:
+                if isinstance(output_ids[0], list):
+                    last_token = output_ids[0][-1] if output_ids[0] else prompt_tokens[-1].item()
+                else:
+                    last_token = output_ids[-1]
+            else:
+                last_token = prompt_tokens[-1].item()
+        else:
+            last_token = prompt_tokens[-1].item()
+        input_ids = torch.tensor([[last_token]], dtype=torch.int32)
+    else:
+        input_ids = torch.tensor([[prompt_tokens[-1].item()]], dtype=torch.int32)
+    
+    # Generate remaining tokens one by one
+    for i in range(1, n_gen):
+        start_time = get_current_time_ns()
+        
+        with torch.no_grad():
+            outputs = runner.generate(
+                batch_input_ids=input_ids,
+                max_new_tokens=1,  # Generate only 1 token per call
+                end_id=end_id,
+                pad_id=pad_id,
+                temperature=1.0,
+                top_k=1,
+                top_p=1.0,
+                return_dict=True,
+            )
+        torch.cuda.synchronize()
+        end_time = get_current_time_ns()
+        
+        # Record time for this token
+        time_holder.add_info(TimeInfoItem(
+            n_p_eval=n_prompt,
+            n_eval=i + 1,  # Token index (1-based)
+            rep_id=rep_id,
+            start_time_ns=start_time,
+            end_time_ns=end_time
+        ))
+        
+        # Get the generated token for next iteration
+        if isinstance(outputs, dict):
+            output_ids = outputs.get('output_ids', outputs.get('sequences'))
+        else:
+            output_ids = outputs
+        
+        if output_ids is not None:
+            if isinstance(output_ids, torch.Tensor):
+                # Handle different tensor shapes: [batch, beam, seq] or [batch, seq]
+                if output_ids.dim() == 3:
+                    # Shape: [batchSize, beamWidth, maxSeqLength]
+                    last_token = output_ids[0, 0, -1].item()  # [batch=0, beam=0, last_token]
+                elif output_ids.dim() == 2:
+                    # Shape: [batchSize, maxSeqLength]
+                    last_token = output_ids[0, -1].item()
+                else:
+                    # Fallback: try to get the last element
+                    last_token = output_ids.flatten()[-1].item()
+            elif isinstance(output_ids, list):
+                # Handle nested list structure
+                if len(output_ids) > 0:
+                    if isinstance(output_ids[0], list):
+                        last_token = output_ids[0][-1] if output_ids[0] else prompt_tokens[-1].item()
+                    else:
+                        last_token = output_ids[-1]
+                else:
+                    last_token = prompt_tokens[-1].item()
+            else:
+                last_token = prompt_tokens[-1].item()
+            input_ids = torch.tensor([[last_token]], dtype=torch.int32)
+        else:
+            input_ids = torch.tensor([[generate_random_tokens(tokenizer, 1, pad_id)[0].item()]], dtype=torch.int32)
 
 
 def parse_arguments():
